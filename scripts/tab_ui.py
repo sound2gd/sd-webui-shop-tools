@@ -24,7 +24,7 @@ from PIL import Image
 current_extension_directory = scripts.basedir()
 sam_model_dir=os.path.join(current_extension_directory, "models")
 model_list = [f for f in os.listdir(sam_model_dir) if os.path.isfile(
-    os.path.join(sam_model_dir, f)) and f.split('.')[-1] != 'txt']
+    os.path.join(sam_model_dir, f)) and f.split('.')[-1] != 'txt' and not f.startswith(".")]
 sam_checkpoint = "sam_vit_h_4b8939.pth"
 model_type = "vit_h"
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -36,9 +36,9 @@ class ShopSAMPredictor:
 
     def load_sam_model(self, model_name=sam_checkpoint):
         model_type = '_'.join(model_name.split('_')[1:-1])
-        model_name = os.path.join(sam_model_dir, sam_checkpoint)
+        checkpoint = os.path.join(sam_model_dir, model_name)
         torch.load = unsafe_torch_load
-        sam = sam_model_registry[model_type](checkpoint=model_name)
+        sam = sam_model_registry[model_type](checkpoint=checkpoint)
         sam.to(device=device)
         self.predictor = SamPredictor(sam)
         torch.load = load
