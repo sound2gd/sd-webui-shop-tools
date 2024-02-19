@@ -1,6 +1,8 @@
 import gradio as gr
 import os
 import torch
+import tempfile
+
 from modules import script_callbacks, scripts
 from modules.safe import unsafe_torch_load, load
 import modules.shared as shared
@@ -83,6 +85,11 @@ def resize_images_from_dir(files, path: str, save_path: str, length=512):
         im2 = pil_resize_image(im, length=length)
         im2.save(f'{save_path}/resize_{f}')
 
+def resize_single_img(img, length=512):
+    im = img.convert("RGB")
+    im2 = pil_resize_image(im, length=length)
+    return im2
+
 # os.environ['HF_ENDPOINT'] = "https://hf-mirror.com"
 
 def load_model_hf(repo_id, filename, ckpt_config_filename, device=device):
@@ -110,7 +117,6 @@ BOX_TRESHOLD = 0.3
 TEXT_TRESHOLD = 0.25
 
 def save_transparent_image(image_source, mask_tensor, save_path):
-    save_path = f'{save_path}.png'
     if os.path.exists(save_path):
         print(f"shop_tools: 已存在{save_path}, 跳过处理")
         return
@@ -131,7 +137,7 @@ def save_transparent_image(image_source, mask_tensor, save_path):
     # 将带 Alpha 通道的图像保存为 PNG
     # cv2.imwrite(save_path, transparent_image)
     transparent_image_pil = Image.fromarray(transparent_image, 'RGBA')
-    transparent_image_pil.save(f'{save_path}.png')
+    return transparent_image_pil
 
 
 def label_prompt(local_image_path: str, out_image_path: str, prompt: str, box_threshold=0.3,text_threshold=0.25, save_mask=False, rembg=True):
@@ -142,11 +148,18 @@ def label_prompt(local_image_path: str, out_image_path: str, prompt: str, box_th
         print(f"shop_tools: 已存在{out_mask_file_path}, 跳过处理")
         skip_mask = True
     out_rembg_file_path = f'{out_image_path}/rembg_{os.path.basename(local_image_path)}'
+    if not out_rembg_file_path.endswith(".png"):
+        out_rembg_file_path = f'{out_rembg_file_path}.png'
     if rembg and os.path.exists(out_rembg_file_path):
         print(f"shop_tools: 已存在{out_rembg_file_path}, 跳过处理")
         skip_rembg = True
     if skip_rembg and skip_mask:
-        return
+        if rembg and save_mask:
+            return [Image.open(out_mask_file_path), Image.open(out_rembg_file_path)]
+        if rembg:
+            return [Image.open(out_rembg_file_path)]
+        if save_mask:
+            return [Image.open(out_mask_file_path)]
 
     print(f"shop_tools: prompt={prompt}, box={box_threshold}, text={text_threshold}")
     image_source, image = load_image(f'{local_image_path}')
@@ -172,16 +185,47 @@ def label_prompt(local_image_path: str, out_image_path: str, prompt: str, box_th
         multimask_output=False,
     )
     image_mask = masks[0][0].cpu().numpy()
+    results = []
     if save_mask:
         image_mask_pil = Image.fromarray(image_mask)
         image_mask_pil.save(out_mask_file_path)
+        results.append(image_mask_pil)
     if rembg:
-        save_transparent_image(image_source, image_mask, out_rembg_file_path)
+        transparent_image_pil = save_transparent_image(image_source, image_mask, out_rembg_file_path)
+        transparent_image_pil.save(f'{out_rembg_file_path}')
+        results.append(transparent_image_pil)
+    return results
 
 
 dir_names = ["resize","rembg", "mask"]
 def processing(input_dir, rembg_enabled, rembg_seg_prompt, rembg_box_threshold, rembg_text_threshold,
-                    mask_enabled, mask_seg_prompt, mask_box_threshold, mask_text_threshold):
+                    mask_enabled, mask_seg_prompt, mask_box_threshold, mask_text_threshold, model_name, single_image, input_tab_state):
+    if input_tab_state == 1:
+        return [None, processing_single_image(input_dir, rembg_enabled, rembg_seg_prompt, rembg_box_threshold, rembg_text_threshold,
+                    mask_enabled, mask_seg_prompt, mask_box_threshold, mask_text_threshold, model_name, single_image)]
+    else:
+        return [processing_dir(input_dir, rembg_enabled, rembg_seg_prompt, rembg_box_threshold, rembg_text_threshold,
+                               mask_enabled, mask_seg_prompt, mask_box_threshold, mask_text_threshold, model_name, single_image), None]
+
+def processing_single_image(input_dir, rembg_enabled, rembg_seg_prompt, rembg_box_threshold, rembg_text_threshold,
+                            mask_enabled, mask_seg_prompt, mask_box_threshold, mask_text_threshold, model_name, single_image):
+    with tempfile.TemporaryDirectory() as dir_local:
+        resize_img = resize_single_img(single_image)
+        resize_img_path = os.path.join(dir_local, "resize.png")
+        resize_img.save(resize_img_path)
+        result = [resize_img]
+        if rembg_enabled:
+            r = label_prompt(resize_img_path, dir_local, rembg_seg_prompt, text_threshold=rembg_text_threshold, box_threshold=rembg_box_threshold, rembg=True, save_mask=False)
+            result.extend(r)
+        if mask_enabled:
+            r = label_prompt(resize_img_path, dir_local, mask_seg_prompt, text_threshold=mask_text_threshold, box_threshold=mask_box_threshold, rembg=False, save_mask=True)
+            result.extend(r)
+        return tuple(result)
+
+
+
+def processing_dir(input_dir, rembg_enabled, rembg_seg_prompt, rembg_box_threshold, rembg_text_threshold,
+                    mask_enabled, mask_seg_prompt, mask_box_threshold, mask_text_threshold, model_name, single_image):
     if not os.path.exists(input_dir):
         return "原图文件夹不存在"
     # 创建3个文件夹
@@ -206,7 +250,6 @@ def processing(input_dir, rembg_enabled, rembg_seg_prompt, rembg_box_threshold, 
             label_prompt(x, full_dir_names[2], mask_seg_prompt, text_threshold=mask_text_threshold, box_threshold=mask_box_threshold, rembg=False, save_mask=True)
     return "操作完成"
 
-
 def on_ui_tabs():
     with gr.Blocks(analytics_enabled=False) as ShopTools:
         input_tab_state = gr.State(value=0)
@@ -215,8 +258,10 @@ def on_ui_tabs():
                 with gr.Tabs():
                     with gr.TabItem(label="文件夹批量处理") as input_tab_dir:
                         input_dir = gr.Textbox(label="原图文件夹", **shared.hide_dirs)
-                        model_name = gr.Dropdown(label="SAM模型", elem_id="sam_model", choices=model_list,
-                                                 value=model_list[0] if len(model_list) > 0 else None)
+                    with gr.TabItem(label="单张图处理") as input_tab_single:
+                        single_image = gr.Image(type="pil")
+                    model_name = gr.Dropdown(label="SAM模型", elem_id="sam_model", choices=model_list,
+                                                value=model_list[0] if len(model_list) > 0 else None)
                 with gr.Accordion("主体设置", open=True):
                     with gr.Tab("SAM & Groundino 参数"):
                         rembg_enabled = gr.Checkbox(label="启用", show_label=True, value=True)
@@ -232,19 +277,19 @@ def on_ui_tabs():
 
                 submit = gr.Button(value="开始处理")
             with gr.Row():
-                with gr.Column():
+                with gr.Column(visible=True) as out_column:
                     gallery = gr.Textbox(label="outputs", show_label=False, elem_id="gallery")
-                    # gallery = gr.Gallery(label="outputs", show_label=True, elem_id="gallery").style(grid=2, object_fit="contain")
+                with gr.Column(visible=False) as out_column2:
+                    gallery2 = gr.Gallery(label="outputs", show_label=True, elem_id="gallery2").style(grid=3, object_fit="contain")
 
         # 0: single 1: batch 2: batch dir
-        # input_tab_single.select(fn=lambda: 0, inputs=[], outputs=[input_tab_state])
-        # input_tab_batch.select(fn=lambda: 1, inputs=[], outputs=[input_tab_state])
-        input_tab_dir.select(fn=lambda: 0, inputs=[], outputs=[input_tab_state])
+        input_tab_dir.select(fn=lambda: [gr.update(visible=True), gr.update(visible=False), 0], inputs=[], outputs=[out_column, out_column2, input_tab_state])
+        input_tab_single.select(fn=lambda: [gr.update(visible=False), gr.update(visible=True), 1], inputs=[], outputs=[out_column, out_column2, input_tab_state])
         submit.click(
             processing,
             inputs=[input_dir, rembg_enabled, rembg_seg_prompt, rembg_box_threshold, rembg_text_threshold,
-                    mask_enabled, mask_seg_prompt, mask_box_threshold, mask_text_threshold],
-            outputs=gallery
+                    mask_enabled, mask_seg_prompt, mask_box_threshold, mask_text_threshold, model_name, single_image, input_tab_state],
+            outputs=[gallery, gallery2]
         )
 
     return [(ShopTools, "电商插件", "shop_tools")]
