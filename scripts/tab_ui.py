@@ -32,24 +32,22 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 class ShopSAMPredictor:
     def __init__(self):
         self.predictor = None
-        self.is_loaded = False
+        self.model_loaded = None
 
-    def load_sam_model(self, sam_checkpoint=sam_checkpoint):
-        if self.is_loaded:
-            return
-
-        model_type = '_'.join(sam_checkpoint.split('_')[1:-1])
-        sam_checkpoint = os.path.join(sam_model_dir, sam_checkpoint)
+    def load_sam_model(self, model_name=sam_checkpoint):
+        model_type = '_'.join(model_name.split('_')[1:-1])
+        model_name = os.path.join(sam_model_dir, sam_checkpoint)
         torch.load = unsafe_torch_load
-        sam = sam_model_registry[model_type](checkpoint=sam_checkpoint)
+        sam = sam_model_registry[model_type](checkpoint=model_name)
         sam.to(device=device)
         self.predictor = SamPredictor(sam)
         torch.load = load
-        self.is_loaded = True
+        self.model_loaded = model_name
 
-    def get_predictor(self):
-        if not self.is_loaded:
-            self.load_sam_model()
+    def get_predictor(self, model_name=sam_checkpoint):
+        if self.model_loaded != model_name:
+            print(f"shop_tools: load model {model_name}")
+            self.load_sam_model(model_name=model_name)
         return self.predictor
 
 sam_holder = ShopSAMPredictor()
@@ -140,7 +138,7 @@ def save_transparent_image(image_source, mask_tensor, save_path):
     return transparent_image_pil
 
 
-def label_prompt(local_image_path: str, out_image_path: str, prompt: str, box_threshold=0.3,text_threshold=0.25, save_mask=False, rembg=True):
+def label_prompt(local_image_path: str, out_image_path: str, prompt: str, box_threshold=0.3,text_threshold=0.25, save_mask=False, rembg=True, model_name=sam_checkpoint):
     skip_mask = not save_mask
     skip_rembg = not rembg
     out_mask_file_path = f'{out_image_path}/mask_{os.path.basename(local_image_path)}'
@@ -175,7 +173,7 @@ def label_prompt(local_image_path: str, out_image_path: str, prompt: str, box_th
     H, W, _ = image_source.shape
     boxes_xyxy = box_ops.box_cxcywh_to_xyxy(boxes) * torch.Tensor([W, H, W, H])
 
-    predictor=sam_holder.get_predictor()
+    predictor=sam_holder.get_predictor(model_name=model_name)
     predictor.set_image(image_source)
     transformed_boxes = predictor.transform.apply_boxes_torch(boxes_xyxy, image_source.shape[:2]).to(device)
     masks, _, _ = predictor.predict_torch(
@@ -215,10 +213,10 @@ def processing_single_image(input_dir, rembg_enabled, rembg_seg_prompt, rembg_bo
         resize_img.save(resize_img_path)
         result = [resize_img]
         if rembg_enabled:
-            r = label_prompt(resize_img_path, dir_local, rembg_seg_prompt, text_threshold=rembg_text_threshold, box_threshold=rembg_box_threshold, rembg=True, save_mask=False)
+            r = label_prompt(resize_img_path, dir_local, rembg_seg_prompt, text_threshold=rembg_text_threshold, box_threshold=rembg_box_threshold, rembg=True, save_mask=False, model_name=model_name)
             result.extend(r)
         if mask_enabled:
-            r = label_prompt(resize_img_path, dir_local, mask_seg_prompt, text_threshold=mask_text_threshold, box_threshold=mask_box_threshold, rembg=False, save_mask=True)
+            r = label_prompt(resize_img_path, dir_local, mask_seg_prompt, text_threshold=mask_text_threshold, box_threshold=mask_box_threshold, rembg=False, save_mask=True,model_name=model_name)
             result.extend(r)
         return tuple(result)
 
@@ -242,12 +240,12 @@ def processing_dir(input_dir, rembg_enabled, rembg_seg_prompt, rembg_box_thresho
         # 从大小改编后的文件夹移除背景
         for x in [os.path.join(resize_dir, f) for f in os.listdir(resize_dir) if not f.startswith(".")]:
             print(f'shop_tools: rembg正在处理{x}')
-            label_prompt(x, full_dir_names[1], rembg_seg_prompt, text_threshold=rembg_text_threshold, box_threshold=rembg_box_threshold, rembg=True, save_mask=False)
+            label_prompt(x, full_dir_names[1], rembg_seg_prompt, text_threshold=rembg_text_threshold, box_threshold=rembg_box_threshold, rembg=True, save_mask=False, model_name=model_name)
     if mask_enabled:
         # 从大小改编后的文件夹生成遮罩
         for x in [os.path.join(resize_dir, f) for f in os.listdir(resize_dir) if not f.startswith(".")]:
             print(f'shop_tools: mask正在处理{x}')
-            label_prompt(x, full_dir_names[2], mask_seg_prompt, text_threshold=mask_text_threshold, box_threshold=mask_box_threshold, rembg=False, save_mask=True)
+            label_prompt(x, full_dir_names[2], mask_seg_prompt, text_threshold=mask_text_threshold, box_threshold=mask_box_threshold, rembg=False, save_mask=True, model_name=model_name)
     return "操作完成"
 
 def on_ui_tabs():
