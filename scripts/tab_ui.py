@@ -77,13 +77,13 @@ def pil_resize_image(image: Image.Image, length=768):
     return rtn
 
 
-def resize_images_from_dir(files, path: str, save_path: str, length=512):
+def resize_images_from_dir(files, path: str, save_path: str, length=768):
     for f in [x for x in files if not x.startswith(".")]:
         im = Image.open(os.path.join(path, f)).convert("RGB")
         im2 = pil_resize_image(im, length=length)
         im2.save(f'{save_path}/resize_{f}')
 
-def resize_single_img(img, length=512):
+def resize_single_img(img, length=768):
     im = img.convert("RGB")
     im2 = pil_resize_image(im, length=length)
     return im2
